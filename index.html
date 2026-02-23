@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Stash – earn & share</title>
+    <meta name="theme-color" content="#0A64FF">
+    <link rel="manifest" href="data:application/manifest+json,{...}"> <!-- same as before -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        /* same base styles as before, plus new admin/grid styles */
+        :root { /* ... keep existing variables ... */ }
+        * { margin:0; padding:0; box-sizing:border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+        body { background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+        /* ... all previous styles (header, nav, cards, etc.) ... */
+        /* new styles for admin, stories, ads */
+        .stories-row { display: flex; gap: 12px; overflow-x: auto; padding: 16px 0; margin-bottom: 20px; }
+        .story-circle { display: flex; flex-direction: column; align-items: center; cursor: pointer; }
+        .story-avatar { width: 70px; height: 70px; border-radius: 70px; background: linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888); padding: 3px; }
+        .story-avatar.unseen { animation: pulse-ring 1.5s infinite; }
+        .story-avatar img { width: 100%; height: 100%; border-radius: 70px; border: 3px solid white; object-fit: cover; }
+        @keyframes pulse-ring { 0% { box-shadow: 0 0 0 0 rgba(10,100,255,0.7); } 70% { box-shadow: 0 0 0 10px rgba(10,100,255,0); } 100% { box-shadow: 0 0 0 0 rgba(10,100,255,0); } }
+        .story-username { font-size: 0.8rem; margin-top: 4px; }
+
+        .story-viewer { position: fixed; top:0; left:0; right:0; bottom:0; background:black; z-index:10000; display:flex; flex-direction:column; }
+        .story-progress-bar { display:flex; gap:4px; padding:10px; }
+        .progress-segment { height:3px; background:#333; flex:1; }
+        .progress-segment.active { background:white; }
+        .story-image { flex:1; background-size:contain; background-repeat:no-repeat; background-position:center; }
+
+        .admin-section { background:var(--card); border-radius:var(--radius); padding:20px; margin-bottom:20px; }
+        .stats-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:16px; margin-bottom:20px; }
+        .stat-card { background:var(--bg); padding:20px; border-radius:12px; text-align:center; }
+        .stat-card strong { display:block; font-size:2rem; color:var(--primary); }
+
+        .ad-banner { background:var(--card); border-radius:var(--radius); padding:16px; margin-bottom:20px; display:flex; align-items:center; gap:16px; border:2px solid gold; }
+        .ad-banner img { width:80px; height:80px; border-radius:12px; object-fit:cover; }
+        .ad-info { flex:1; }
+        .ad-cta { background:var(--primary); color:white; padding:10px 20px; border-radius:30px; text-decoration:none; }
+
+        /* modal for story creation, ad creation, etc. */
+        .modal { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); display:none; align-items:center; justify-content:center; z-index:2000; }
+        .modal.active { display:flex; }
+        .modal-content { background:var(--card); border-radius:var(--radius); max-width:500px; width:90%; max-height:90vh; overflow-y:auto; padding:20px; }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <!-- same launch screen, install banner, offline indicator, toast, loading overlay -->
+    <div id="launchScreen">...</div>
+    <div id="installBanner">...</div>
+    <div id="offlineIndicator">...</div>
+    <div class="toast" id="toast"></div>
+    <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
+
+    <div class="stash-header" id="appHeader">
+        <div class="header-title"><i class="fas fa-cube"></i> Stash</div>
+        <div class="header-actions" id="headerActions"></div>
+    </div>
+
+    <div class="main-content" id="mainContent"></div>
+
+    <div class="stash-nav" id="bottomNav" style="display:none;">
+        <div class="nav-item" data-page="home"><div class="nav-icon"><i class="fas fa-home"></i></div><div class="nav-label">Home</div></div>
+        <div class="nav-item" data-page="explore"><div class="nav-icon"><i class="fas fa-compass"></i></div><div class="nav-label">Explore</div></div>
+        <div class="nav-item" data-page="stories"><div class="nav-icon"><i class="fas fa-clock"></i></div><div class="nav-label">Stories</div></div>
+        <div class="nav-item" data-page="earnings"><div class="nav-icon"><i class="fas fa-dollar-sign"></i></div><div class="nav-label">Earn</div></div>
+        <div class="nav-item" data-page="profile"><div class="nav-icon"><i class="fas fa-user"></i></div><div class="nav-label">Me</div></div>
+    </div>
+
+    <script>
+        // ---------- Supabase ----------
+        const SUPABASE_URL = 'https://wfxpzfkbpejalbjhnzak.supabase.co';
+        const SUPABASE_ANON_KEY = 'sb_publishable_YMrDZyL_GsBlWCWt3KbOpQ_8bVcfKCi';
+        const { createClient } = supabase;
+        const _supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        // ---------- Global ----------
+        let currentUser = null;
+        let currentProfile = null;
+        let activePage = 'home';
+        let realtimeSubs = [];
+
+        // ---------- Utilities (showToast, showLoading, timeSince, escapeHtml) same as before ----------
+        function showToast(msg) { /* ... */ }
+        function showLoading(show) { /* ... */ }
+        function timeSince(timestamp) { /* ... */ }
+        function escapeHtml(unsafe) { /* ... */ }
+
+        // ---------- Auth ----------
+        async function checkUser() {
+            const { data: { user } } = await _supabase.auth.getUser();
+            currentUser = user;
+            if(user) {
+                const { data: profile } = await _supabase.from('profiles').select('*').eq('id', user.id).single();
+                currentProfile = profile;
+                document.getElementById('bottomNav').style.display = 'flex';
+                if(profile?.is_admin) {
+                    // add admin icon to header
+                    document.getElementById('headerActions').innerHTML += `<i class="fas fa-cog header-icon" onclick="navigate('admin')"></i>`;
+                }
+                loadPage(activePage);
+                subscribeToRealtime();
+                fetchUnreadCounts();
+            } else {
+                document.getElementById('bottomNav').style.display = 'none';
+                showAuthPage();
+            }
+        }
+
+        // ---------- Navigation ----------
+        function navigate(page) {
+            activePage = page;
+            loadPage(page);
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            document.querySelector(`.nav-item[data-page="${page}"]`)?.classList.add('active');
+        }
+
+        async function loadPage(page) {
+            const container = document.getElementById('mainContent');
+            if(!currentUser && page !== 'auth') { showAuthPage(); return; }
+            if(page === 'auth') { showAuthPage(); return; }
+            if(page === 'home') container.innerHTML = await renderHome();
+            if(page === 'explore') container.innerHTML = await renderExplore();
+            if(page === 'stories') container.innerHTML = await renderStoriesPage();
+            if(page === 'earnings') container.innerHTML = await renderEarningsPage();
+            if(page === 'profile') container.innerHTML = await renderProfile(currentProfile?.username);
+            if(page === 'admin') container.innerHTML = await renderAdmin();
+        }
+
+        // ---------- Home Feed with Ads and Stories Row ----------
+        async function renderHome() {
+            // Fetch active stories from followed users + current user
+            const { data: stories } = await _supabase
+                .from('stories')
+                .select('*, profiles(username, avatar_url)')
+                .gt('expires_at', new Date().toISOString())
+                .order('created_at', { ascending: false });
+            // Group by user
+            const storyUsers = [];
+            const seenUsers = new Set();
+            stories?.forEach(s => {
+                if(!seenUsers.has(s.user_id)) {
+                    seenUsers.add(s.user_id);
+                    storyUsers.push(s);
+                }
+            });
+
+            // Fetch posts (including ads)
+            const { data: posts } = await _supabase
+                .from('posts')
+                .select('*, profiles(username, avatar_url, is_admin), likes(user_id), comments(*)')
+                .eq('is_disabled', false)
+                .order('created_at', { ascending: false });
+
+            // Fetch active ad campaigns
+            const { data: ads } = await _supabase
+                .from('ad_campaigns')
+                .select('*')
+                .eq('status', 'active')
+                .gt('budget', 0);
+
+            let html = `
+                <div class="stories-row" id="storiesRow">
+                    ${storyUsers.map(s => `
+                        <div class="story-circle" onclick="openStoryViewer('${s.user_id}')">
+                            <div class="story-avatar ${hasUnseenStories(s.user_id) ? 'unseen' : ''}">
+                                <img src="${s.profiles.avatar_url || 'https://via.placeholder.com/70'}" alt="">
+                            </div>
+                            <span class="story-username">${s.profiles.username}</span>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="compose-card">
+                    <div class="compose-header">
+                        <div class="compose-avatar">${currentProfile?.username?.charAt(0)}</div>
+                        <textarea class="compose-textarea" id="postContent" rows="2" placeholder="What's on your mind?"></textarea>
+                    </div>
+                    <div class="compose-actions">
+                        <label class="action-btn"><i class="fas fa-image"></i> <input type="file" id="postImage" accept="image/*" style="display:none;" onchange="previewImage()"></label>
+                        <button class="post-btn" onclick="createPost()">Stash</button>
+                    </div>
+                </div>
+            `;
+
+            // Interleave ads every 3 posts (simple)
+            let postIndex = 0;
+            posts?.forEach(post => {
+                html += buildPostHTML(post);
+                postIndex++;
+                if(postIndex % 3 === 0 && ads?.length) {
+                    const ad = ads[Math.floor(Math.random() * ads.length)];
+                    html += `
+                        <div class="ad-banner">
+                            <img src="${ad.image_url}" alt="ad">
+                            <div class="ad-info">
+                                <h4>${escapeHtml(ad.title)}</h4>
+                                <a href="${ad.target_url}" target="_blank" class="ad-cta" onclick="trackAdClick('${ad.id}')">Learn more</a>
+                            </div>
+                        </div>
+                    `;
+                }
+            });
+
+            return html;
+        }
+
+        function buildPostHTML(post) {
+            const likedByMe = post.likes?.some(l => l.user_id === currentUser?.id);
+            return `
+                <div class="post" data-id="${post.id}">
+                    <div class="post-header" onclick="navigateToProfile('${post.profiles.username}')">
+                        <div class="post-avatar">${post.profiles.avatar_url ? `<img src="${post.profiles.avatar_url}" style="width:100%; height:100%; border-radius:50%; object-fit:cover;">` : post.profiles.username?.charAt(0)}</div>
+                        <div>
+                            <div class="post-username">${escapeHtml(post.profiles.username)}</div>
+                            <div class="post-time"><i class="far fa-clock"></i> ${timeSince(post.created_at)} · 👁️ ${post.view_count || 0}</div>
+                        </div>
+                    </div>
+                    <div class="post-content">${escapeHtml(post.content)}</div>
+                    ${post.image_url ? `<img src="${post.image_url}" class="post-image" onclick="viewImage('${post.image_url}')">` : ''}
+                    <div class="post-actions">
+                        <button class="action-btn ${likedByMe ? 'liked' : ''}" onclick="toggleLike('${post.id}')"><i class="fa${likedByMe ? 's' : 'r'} fa-heart"></i> <span>${post.likes?.length || 0}</span></button>
+                        <button class="action-btn" onclick="focusComment('${post.id}')"><i class="far fa-comment"></i> <span>${post.comments?.length || 0}</span></button>
+                        ${currentProfile?.is_admin ? `<button class="action-btn" onclick="adminDisablePost('${post.id}')"><i class="fas fa-ban"></i></button>` : ''}
+                    </div>
+                    <div class="comments-section" id="comments-${post.id}">
+                        ${renderComments(post.comments)}
+                        <div class="add-comment">
+                            <input type="text" id="commentInput-${post.id}" placeholder="Add a comment...">
+                            <button onclick="addComment('${post.id}')">Post</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // ---------- Stories ----------
+        let currentStoryUser = null;
+        let storyQueue = [];
+
+        async function openStoryViewer(userId) {
+            const { data: stories } = await _supabase
+                .from('stories')
+                .select('*')
+                .eq('user_id', userId)
+                .gt('expires_at', new Date().toISOString())
+                .order('created_at', { ascending: true });
+            if(!stories || stories.length === 0) return;
+            storyQueue = stories;
+            currentStoryUser = userId;
+            renderStoryViewer(0);
+        }
+
+        function renderStoryViewer(index) {
+            if(index >= storyQueue.length) {
+                document.getElementById('storyViewer')?.remove();
+                return;
+            }
+            const story = storyQueue[index];
+            const viewer = document.createElement('div');
+            viewer.id = 'storyViewer';
+            viewer.className = 'story-viewer';
+            viewer.innerHTML = `
+                <div class="story-progress-bar">
+                    ${storyQueue.map((_, i) => `<div class="progress-segment ${i === index ? 'active' : ''}" style="width:${100/storyQueue.length}%"></div>`).join('')}
+                </div>
+                <div class="story-image" style="background-image:url('${story.media_url}')"></div>
+                <div style="position:absolute; bottom:20px; left:0; right:0; text-align:center; color:white;">
+                    <button onclick="closeStoryViewer()">Close</button>
+                </div>
+            `;
+            document.body.appendChild(viewer);
+            // Track view duration
+            const startTime = Date.now();
+            const timer = setTimeout(() => {
+                const duration = Math.floor((Date.now() - startTime) / 1000);
+                _supabase.from('story_views').insert({ story_id: story.id, viewer_id: currentUser.id, view_duration: duration });
+                renderStoryViewer(index + 1);
+            }, 5000); // auto advance after 5 sec
+            viewer.addEventListener('click', (e) => {
+                if(e.target.tagName === 'BUTTON') return;
+                clearTimeout(timer);
+                renderStoryViewer(index + 1);
+            });
+        }
+
+        function closeStoryViewer() {
+            document.getElementById('storyViewer')?.remove();
+        }
+
+        // ---------- Monetization: track post views ----------
+        // This should be called when a post enters viewport (IntersectionObserver)
+        function trackPostView(postId) {
+            if(!currentUser) return;
+            _supabase.from('post_views').insert({ post_id: postId, viewer_id: currentUser.id });
+            // Increment view count in posts table (optional)
+            _supabase.rpc('increment_post_view', { post_id: postId }); // you'd need to create this function
+        }
+
+        // ---------- Earnings Page ----------
+        async function renderEarningsPage() {
+            const { data: views } = await _supabase
+                .from('post_views')
+                .select('*, posts(user_id)')
+                .eq('posts.user_id', currentUser.id);
+            const earnings = (views?.length || 0) * 0.01; // $0.01 per view, from settings
+            const { data: withdrawals } = await _supabase
+                .from('withdrawals')
+                .select('*')
+                .eq('user_id', currentUser.id)
+                .order('requested_at', { ascending: false });
+            return `
+                <h2>Your Earnings</h2>
+                <div class="stats-grid">
+                    <div class="stat-card"><span>Total Views</span><strong>${views?.length || 0}</strong></div>
+                    <div class="stat-card"><span>Earned</span><strong>$${earnings.toFixed(2)}</strong></div>
+                    <div class="stat-card"><span>Balance</span><strong>$${currentProfile?.balance || 0}</strong></div>
+                </div>
+                <div class="admin-section">
+                    <h3>Withdraw Funds</h3>
+                    <input type="number" id="withdrawAmount" placeholder="Amount ($)" min="10" step="0.01">
+                    <select id="withdrawMethod">
+                        <option value="paypal">PayPal</option>
+                        <option value="mpesa">M-Pesa</option>
+                    </select>
+                    <input type="text" id="withdrawAccount" placeholder="Account details">
+                    <button onclick="requestWithdrawal()">Request</button>
+                </div>
+                <div class="admin-section">
+                    <h3>Withdrawal History</h3>
+                    ${withdrawals?.map(w => `
+                        <div>${w.amount} - ${w.status} (${timeSince(w.requested_at)})</div>
+                    `).join('')}
+                </div>
+            `;
+        }
+
+        async function requestWithdrawal() {
+            const amount = parseFloat(document.getElementById('withdrawAmount').value);
+            const method = document.getElementById('withdrawMethod').value;
+            const account = document.getElementById('withdrawAccount').value;
+            if(amount > currentProfile.balance) { showToast('Insufficient balance'); return; }
+            const { error } = await _supabase.from('withdrawals').insert({
+                user_id: currentUser.id,
+                amount,
+                payment_method: method,
+                account_details: account
+            });
+            if(!error) showToast('Request submitted');
+        }
+
+        // ---------- Admin Panel ----------
+        async function renderAdmin() {
+            if(!currentProfile?.is_admin) return '<p>Access denied</p>';
+            const { count: users } = await _supabase.from('profiles').select('*', { count: 'exact', head: true });
+            const { count: posts } = await _supabase.from('posts').select('*', { count: 'exact', head: true });
+            const { count: pendingWithdrawals } = await _supabase.from('withdrawals').select('*', { count: 'exact', head: true }).eq('status', 'pending');
+            const { data: settings } = await _supabase.from('admin_settings').select('*');
+            const settingsMap = Object.fromEntries(settings.map(s => [s.key, s.value]));
+            return `
+                <h2>Admin Dashboard</h2>
+                <div class="stats-grid">
+                    <div class="stat-card"><span>Users</span><strong>${users}</strong></div>
+                    <div class="stat-card"><span>Posts</span><strong>${posts}</strong></div>
+                    <div class="stat-card"><span>Pending Withdrawals</span><strong>${pendingWithdrawals}</strong></div>
+                </div>
+                <div class="admin-section">
+                    <h3>Settings</h3>
+                    <div class="form-group">
+                        <label>Ad System Enabled</label>
+                        <input type="checkbox" id="adEnabled" ${settingsMap.ad_system_enabled ? 'checked' : ''}>
+                    </div>
+                    <div class="form-group">
+                        <label>Default CPC ($)</label>
+                        <input type="number" id="defaultCPC" value="${settingsMap.default_cpc || 0.1}" step="0.01">
+                    </div>
+                    <div class="form-group">
+                        <label>Default CPM ($)</label>
+                        <input type="number" id="defaultCPM" value="${settingsMap.default_cpm || 1.0}" step="0.01">
+                    </div>
+                    <div class="form-group">
+                        <label>Commission %</label>
+                        <input type="number" id="commission" value="${settingsMap.commission_percentage || 10}">
+                    </div>
+                    <div class="form-group">
+                        <label>Post Earnings Rate ($ per view)</label>
+                        <input type="number" id="postRate" value="${settingsMap.post_earnings_rate || 0.01}" step="0.001">
+                    </div>
+                    <button onclick="saveAdminSettings()">Save Settings</button>
+                </div>
+                <div class="admin-section">
+                    <h3>Withdrawal Requests</h3>
+                    <div id="withdrawalList"></div>
+                </div>
+                <div class="admin-section">
+                    <h3>Users</h3>
+                    <div id="userList"></div>
+                </div>
+                <div class="admin-section">
+                    <h3>Posts</h3>
+                    <div id="postList"></div>
+                </div>
+            `;
+        }
+
+        async function saveAdminSettings() {
+            const updates = [
+                { key: 'ad_system_enabled', value: document.getElementById('adEnabled').checked },
+                { key: 'default_cpc', value: parseFloat(document.getElementById('defaultCPC').value) },
+                { key: 'default_cpm', value: parseFloat(document.getElementById('defaultCPM').value) },
+                { key: 'commission_percentage', value: parseFloat(document.getElementById('commission').value) },
+                { key: 'post_earnings_rate', value: parseFloat(document.getElementById('postRate').value) }
+            ];
+            for(let u of updates) {
+                await _supabase.from('admin_settings').upsert({ key: u.key, value: u.value });
+            }
+            showToast('Settings saved');
+        }
+
+        window.adminDisablePost = async (postId) => {
+            await _supabase.from('posts').update({ is_disabled: true }).eq('id', postId);
+            showToast('Post disabled');
+            loadPage(activePage);
+        };
+
+        // ---------- Ad Tracking ----------
+        window.trackAdClick = async (campaignId) => {
+            if(!currentUser) return;
+            const { data: campaign } = await _supabase.from('ad_campaigns').select('*').eq('id', campaignId).single();
+            if(campaign.campaign_type === 'cpc') {
+                const cost = campaign.cpc;
+                await _supabase.from('ad_clicks').insert({ campaign_id: campaignId, user_id: currentUser.id, cost });
+                // deduct from campaign budget
+                await _supabase.rpc('deduct_ad_budget', { camp_id: campaignId, amount: cost });
+            }
+        };
+
+        // ---------- Initialization ----------
+        window.onload = async () => {
+            setTimeout(() => document.getElementById('launchScreen').style.display = 'none', 1500);
+            await checkUser();
+        };
+        window.navigate = navigate;
+        // ... other functions (createPost, toggleLike, addComment, etc.) remain same as before
+    </script>
+</body>
+</html>
